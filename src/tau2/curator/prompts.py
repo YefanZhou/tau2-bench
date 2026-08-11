@@ -111,12 +111,41 @@ Your output should:
 {_GUARDRAILS}"""
 
 
+# C1'' — success_only_v2_grounded: same success-only store/gate as v1, but a GROUNDED,
+# NON-DIRECTIVE prompt. Motivated by the gpt-5.4-curator airline regression analysis (nt=1
+# seed 300): a stronger curator wrote longer, more confident briefings that (a) prescribed a
+# specific final choice (e.g. steered the agent to a non-cheapest flight) and (b) asserted
+# speculative policy/eligibility rules not grounded in the retrieved transcripts — which
+# overrode the base agent's correct behavior and broke tasks it could solve unaided. This
+# prompt encodes four fixes: (1) output PROCESS HINTS, never a final decision/choice/verdict;
+# (2) state only what the transcripts actually did/observed — never invent policy rules or
+# eligibility outcomes, tell the agent to verify in the policy instead; (3) explicit precedence
+# (policy + live tool results override the briefing); (4) relevance-gate + hard length cap.
+CURATOR_SYSTEM_SUCCESS_ONLY_V2_GROUNDED = f"""You are a Memory Curator. You will be given a customer-service request that an AI agent must handle by talking to the user and calling tools, along with retrieved past experiences from similar requests the agent resolved successfully.
+
+Your job: turn these raw memories into a few short, GROUNDED process hints that help the agent work efficiently — NOT a plan of decisions to copy.
+
+Each memory contains:
+- A past customer request and the transcript that resolved it. In the transcript, [USER] lines are the customer, [AGENT] lines are the agent's messages or its tool calls written as fn(arg=value), and [TOOL] lines are the tool results.
+
+Strict rules for your output:
+1. Output PROCESS HINTS only — what to look up, what to confirm with the user, and a sensible order of operations. Do NOT prescribe the final choice for this request (which specific flight/item/amount, or whether to approve, deny, refund, or cancel). The agent must decide that from the live tool results, not from you.
+2. State only what the retrieved transcripts actually did and observed. Do NOT infer, assert, or generalize domain-policy rules, eligibility outcomes, fees, or restrictions that are not explicitly shown. When a rule might matter, tell the agent to verify it against the policy — never state the rule yourself.
+3. Precedence: the domain policy and the current tool outputs ALWAYS override anything here. If a hint might conflict with them, say so and defer.
+4. If the retrieved experiences are not clearly similar to the current request, output exactly: "No strongly relevant prior experience." and nothing else.
+
+Keep it to at most 3-5 short bullet points.
+
+{_GUARDRAILS}"""
+
+
 # --- curation-mode registry (mirrors curator_alfworld_v1_api.py) -------------------------- #
 _MODE_SYSTEM_PROMPT = {
-    "success_only":        CURATOR_SYSTEM_SUCCESS_ONLY,
-    "success_only_v1":     CURATOR_SYSTEM_SUCCESS_ONLY_V1,
-    "success_and_fail":    CURATOR_SYSTEM_SUCCESS_AND_FAIL,
-    "success_and_fail_v1": CURATOR_SYSTEM_SUCCESS_AND_FAIL_V1,
+    "success_only":              CURATOR_SYSTEM_SUCCESS_ONLY,
+    "success_only_v1":           CURATOR_SYSTEM_SUCCESS_ONLY_V1,
+    "success_only_v2_grounded":  CURATOR_SYSTEM_SUCCESS_ONLY_V2_GROUNDED,
+    "success_and_fail":          CURATOR_SYSTEM_SUCCESS_AND_FAIL,
+    "success_and_fail_v1":       CURATOR_SYSTEM_SUCCESS_AND_FAIL_V1,
 }
 _STORE_FAILURES_MODES = {"success_and_fail", "success_and_fail_v1"}
 _MARK_RESULTS_MODES = _STORE_FAILURES_MODES

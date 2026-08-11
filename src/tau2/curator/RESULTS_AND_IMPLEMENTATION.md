@@ -1,172 +1,164 @@
-# tau2-bench: curator_v1 (MemCurator) — Implementation & Results
+# tau2-bench: memory methods (curator_v1 / ReasoningBank / SkillOS) — Implementation & Results
 
-**Author:** automated run, 2026-08-11.
-**Status:** baselines reproduced; curator_v1 implemented and evaluated; gpt-5.4 baselines run. Single seed (300) below; 2 more seeds (301, 302) in progress.
+**Updated:** 2026-08-11. Hand-off doc for review/analysis. Covers (A) protocol, (B) results,
+(C) result-file locations, (D) implementation files, (E) important corrections & caveats.
 
-This document is the hand-off for review/analysis. It covers (A) what was run and the numbers,
-(B) the exact result-file locations, (C) the implementation files and how they work, and
-(D) important caveats.
+> **Two corrections since the first draft — read these first:**
+> 1. **Leakage fix.** The original runs used `num_trials=4` with ONE persistent memory bank
+>    across trials. tau-bench repeats each task verbatim every trial and the retrieval key is
+>    the verbatim `user_scenario`, so trials 2-4 retrieved a task's OWN prior-trial winning
+>    trajectory = answer leakage (violates the pass^k i.i.d. assumption). **All results below
+>    use `num_trials=1`** (one lifetime: bank starts empty, accumulates across tasks within the
+>    single pass, a task can only ever retrieve *other* earlier tasks). The old nt=4 numbers are
+>    retired.
+> 2. **gpt-5.4 temperature.** gpt-5.x models only accept `temperature=1` via litellm
+>    (`UnsupportedParamsError` otherwise). tau2 sets `litellm.drop_params=True` (silently drops
+>    the requested temp) and the curator has a temp-fallback (retries without temp), so **every
+>    gpt-5.4 role — agent OR curator — actually ran at temperature 1.0**, regardless of the
+>    requested value recorded in `run_config.json`. gpt-4.1 roles are unaffected (agent/user 0,
+>    curator 0.7). Consequence: any gpt-5.4-vs-gpt-4.1 curator comparison carries a temperature
+>    confound (1.0 vs 0.7) that cannot be removed on the gpt-5.4 side.
 
 ---
 
-## A. Results
+## A. Protocol
 
-All runs: **seed 300, num_trials 4, base task split, max_steps 200**, via the Salesforce
-gateway. Metric = **pass^1** = average binary DB-state reward over all `tasks × trials` sims
-(airline 50×4=200, retail 114×4=456, telecom 114×4=456). pass^1 is computed exactly as the
-shipped reference files compute it (mean of per-sim `reward_info.reward`).
+- Benchmark: tau2-bench (τ²), base task split. **airline = 50 tasks, retail = 114, telecom = 114.**
+- **num_trials = 1** → 50 / 114 / 114 sims per run (one attempt per task; no verbatim repeat → no memory leakage).
+- Metric: **pass^1** = mean per-sim binary reward = tau2's ground-truth DB-state check (not an LLM judge). At k=1 this equals plain accuracy.
+- Seed 300, max_steps 200. Runs via the Salesforce gateway (gpt-5.4 agent-only runs can use the direct-OpenAI profile; both serve the same models).
+- Temperatures: gpt-4.1 agent 0, gpt-4.1 user 0, gpt-4.1 curator 0.7; **all gpt-5.4 roles forced 1.0** (see correction #2).
+- Memory loop (`run_curator.py`): trial-major, episodes processed in groups of `--batch-size` (=memory-update granularity). Retrieve is frozen within a group (retrieve-before), episodes run concurrently, curator writes at the group barrier (curate-after). batch-size 5 → airline 10 update-batches, retail/telecom 23.
 
-### A.1 Reproduction of the paper baselines — gpt-4.1 agent + gpt-4.1 user (temp 0)
+---
 
-| Domain  | This run (no memory) | Paper reference file | Δ vs ref |
+## B. Results (seed 300, num_trials=1, pass^1)
+
+### B.1 Baseline reproduction vs paper reference (gpt-4.1 agent + gpt-4.1 user)
+
+| Domain  | our nt=1 baseline | paper reference (4-trial) | paper reproduced (our 4-trial) |
 |---------|:---:|:---:|:---:|
-| airline | 0.535 | 0.560 | −0.025 |
-| retail  | 0.776 | 0.741 | +0.035 |
-| telecom | 0.364 | 0.342 | +0.022 |
+| airline | 0.580 | 0.560 | 0.535 |
+| retail  | 0.737 | 0.741 | 0.776 |
+| telecom | 0.386 | 0.342 | 0.364 |
 
-Reference files: `data/tau2/results/final/gpt-4.1-2025-04-14_<domain>_*_4trials.json`
-(airline uses `default`, telecom uses `default`, all seed 300 / 4 trials / max_steps 200).
-The small gaps are consistent with gateway serving + temperature-0 tool-call nondeterminism;
-config (seed, trials, max_steps) is identical. Airline is unaffected by the v1.0.1
-banking_knowledge re-grade, so cross-commit comparison is valid.
+Reference = shipped `data/tau2/results/final/gpt-4.1-2025-04-14_<domain>_*_4trials.json`. All
+three arms agree within a few points (single-trial noise + gateway serving). pass^1 throughout.
 
-### A.2 curator_v1 vs no-memory — gpt-4.1 agent + gpt-4.1 user, curator LLM = gpt-4.1
+### B.2 Full comparison — curator model × agent model × retrieve-num
 
-Curator config: `--batch-size 5 --curation-mode success_only_v1 --retrieve-num 3
---reward-source env`. Everything else identical to the baseline.
+All curator runs use curation-mode `success_only_v1` unless noted; batch-size 5.
 
-| Domain  | no-memory | **curator_v1** | Δ (pts) | curator store size (wins) |
-|---------|:---:|:---:|:---:|:---:|
-| airline | 0.535 | **0.595** | **+6.0** | 119 |
-| retail  | 0.776 | **0.816** | **+4.0** | 372 |
-| telecom | 0.364 | **0.575** | **+21.0** | 262 |
+**gpt-4.1 (temp 0) as agent, gpt-4.1 (temp 0) as user simulator:**
 
-curator_v1 beats no-memory on **all three** subsets. Telecom (long multi-step tech-support
-dialogs) benefits most.
+| Curator model | rn | airline (50) | retail (114) | telecom (114) |
+|---|:--:|:--:|:--:|:--:|
+| none (baseline) | – | 0.580 | 0.737 | 0.386 |
+| gpt-4.1 (temp 0.7) | 3 | 0.560 | 0.798 | 0.561 |
+| gpt-5.4 (temp 1.0) | 3 | 0.480 | 0.772 | 0.483 |
+| gpt-5.4 (temp 1.0) | 5 | 0.460 | 0.789 | 0.623 |
 
-### A.3 Capability comparison — gpt-5.4 agent + gpt-5.1 user (temp 0), no memory
+**gpt-5.4 (temp 1.0) as agent, gpt-4.1 (temp 0) as user simulator:**
 
-| Domain  | gpt-5.4 / gpt-5.1 | gpt-4.1 / gpt-4.1 |
-|---------|:---:|:---:|
-| airline | 0.685 | 0.535 |
-| retail  | 0.800 | 0.776 |
-| telecom | 0.502 | 0.364 |
+| Curator model | rn | airline (50) | retail (114) | telecom (114) |
+|---|:--:|:--:|:--:|:--:|
+| none (baseline) | – | 0.640 | 0.798 | 0.491 |
+| gpt-5.4 (temp 1.0) | 3 | 0.780 | 0.886 | 0.746 |
+| gpt-5.4 (temp 1.0) | 5 | 0.660 | 0.877 | 0.702 |
 
-gpt-5.4 beats gpt-4.1 on every domain. Note: **not leaderboard-comparable** — gpt-5.4 is not
-in the tau2 paper, and agent≠user models. gpt-5.4 accepts `temperature=0`, so tau2's default
-config was used unchanged.
+### B.3 Key findings
+- **The gpt-5.4 curator flips sign with agent strength.** With the weak gpt-4.1 agent it *hurts*
+  airline (0.58 → 0.48); with the strong gpt-5.4 agent the same curator *helps* airline (0.64 →
+  0.78). Consistent with "memory hurts when retrieval precision is low and base competence is
+  high; helps when the agent can exploit rich briefings."
+- **gpt-5.4 agent + gpt-5.4 curator is the best cell on every domain** (airline 0.78, retail
+  0.89, telecom 0.75 at rn3), and memory clearly helps the strong agent everywhere.
+- **Why gpt-5.4 curator hurt the gpt-4.1 agent on airline** (trajectory analysis, rn3): 7 tasks
+  flipped win→loss vs the gpt-4.1 curator; **3 (tasks 15, 45, 22) the no-memory baseline solved
+  alone** — memory did net harm. Not length/leakage (briefing medians ~equal, ~0 id leakage);
+  it's *over-confident, speculative, prescriptive* briefings the weak agent defers to. Verbatim:
+  - task 15: "if it is basic economy, changes generally aren't allowed unless policy/tooling supports upgrading first" (asserts an ungrounded rule; task needed *cheapest*, agent then picked non-cheapest)
+  - task 45: "it shows insurance cannot be added to an existing reservation post-booking … do not promise exceptions, vouchers, or partial refunds"
+  - task 22: "if not, do not improvise … prefer one of Omar's gift cards as payment"
+- **retrieve-num 3 vs 5**: no consistent winner; differences are within per-run variance.
 
----
+### B.4 Prompt A/B (airline, gpt-4.1 agent, gpt-5.4 curator temp 1.0, rn3)
+| Curation mode | pass^1 |
+|---|:--:|
+| `success_only_v1` (current) | 0.620 |
+| `success_only_v2_grounded` (new, grounded/non-directive) | 0.560 |
 
-## B. Result-file locations (on GCP node `gcpssh`, host sfr-pod-...-h200-01)
-
-Base: `~/SkillCurator-main/tau2-bench/data/simulations/`
-
-| Run | Directory / file | Format |
-|-----|------------------|--------|
-| gpt-4.1 baseline airline | `airline_repro_gpt41.json/results.json` | tau2 Results |
-| gpt-4.1 baseline retail  | `retail_repro_gpt41.json/results.json`  | tau2 Results |
-| gpt-4.1 baseline telecom | `telecom_repro_gpt41.json/results.json` | tau2 Results |
-| curator_v1 airline | `airline_curator_v1_gpt41/` | curator runner (see below) |
-| curator_v1 retail  | `retail_curator_v1_gpt41/`  | curator runner |
-| curator_v1 telecom | `telecom_curator_v1_gpt41/` | curator runner |
-| gpt-5.4 baseline airline | `airline_gpt54_gpt51.json/results.json` | tau2 Results |
-| gpt-5.4 baseline retail  | `retail_gpt54_gpt51.json/results.json`  | tau2 Results |
-| gpt-5.4 baseline telecom | `telecom_gpt54_gpt51.json/results.json` | tau2 Results |
-
-Run logs: `~/tau_repro_logs/<domain>_{repro,curator,gpt54}.log`.
-
-**tau2 Results format** (`results.json`): top-level `simulations` (list) + `tasks` + `info`
-(seed, num_trials, max_steps, git_commit). Per-sim reward at `sim.reward_info.reward`. Load
-with `tau2.data_model.simulation.Results.load(path)` or read pass^1 as
-`mean(s["reward_info"]["reward"] for s in json["simulations"])`.
-
-**curator runner format** (per-run directory):
-- `idx_<n>.json` — one per (task, trial), `n = trial*num_tasks + task_index`. Fields:
-  `task_id, trial, seed, reward` (env DB reward = accuracy), `query` (the NL task /
-  `user_scenario`), `briefing` (the injected memory, "" if none retrieved), `trajectory`
-  (`[USER]/[AGENT]/[TOOL]` text). With `--reward-source judge`, adds `env_reward`,
-  `judge_reward`, `judge_score`, `judge_subscores`, `judge_rationale`.
-- `curator_tau_memory.jsonl` — the append-only store (`task_id, query, trajectory, reward,
-  status`). Line count = number of stored wins.
-- `curator_calls.jsonl` — every read-time curation call: `query, retrieved` (per-entry
-  `store_index, score, rank, question, status`), `retrieved_text`, `messages` (full
-  system+user prompt sent to the curator LLM), `briefing`, `briefing_raw`. Use this to audit
-  retrieval quality and prompt behavior.
-- `run_config.json` — args + trial seeds + masked env.
-
-pass^1 for a curator run = `mean(json.load(idx_i)["reward"] for all idx files)`.
+**Inconclusive.** The same v1 prompt scored 0.480 in one run and 0.620 in another (14-pt swing
+from temp-1.0 curator sampling alone), which exceeds the 6-pt A/B gap. `v2_grounded` *does*
+produce the intended output (briefings ~2.6× shorter, grounded process-hints, no invented
+policy rules) but a single 50-task run at temp 1.0 cannot resolve the effect. Needs ≥3 seeds/arm.
 
 ---
 
-## C. Implementation
+## C. Result-file locations (GCP node `gcpssh`, under `~/SkillCurator-main/tau2-bench/data/simulations/`)
 
-All code committed to the **tau2-bench git submodule** (`github.com/YefanZhou/tau2-bench.git`,
-branch `main`, commit `857e883`), pulled to GCP. Package: `src/tau2/curator/`.
+| Run family | directory pattern |
+|---|---|
+| gpt-4.1 baseline | `<domain>_base_nt1_s300.json/results.json` |
+| gpt-4.1 curator | `<domain>_cur_nt1_s300/` |
+| gpt-4.1 agent + gpt-5.4 curator | `<domain>_cur_gpt54cur_rn{3,5}_nt1_s300/` |
+| gpt-5.4 agent (no memory) | `<domain>_gpt54agent_nt1_s300.json/results.json` |
+| gpt-5.4 agent + gpt-5.4 curator | `<domain>_g54agent_g54cur_rn{3,5}_nt1_s300/` |
+| airline prompt A/B | `airline_ABtest_success_only_{v1,v2_grounded}_g54cur_s300/` |
+
+Logs: `~/tau_repro_logs/*.log`. **tau2 Results** dirs have `results.json` (read pass^1 as
+`mean(s.reward_info.reward)`). **curator runner** dirs have per-(task,trial) `idx_<n>.json`
+(`reward`, `query`, `briefing`, `trajectory`), `curator_tau_memory.jsonl` / `reasoning_bank.jsonl`
+/ `skillos_skills.json` (the store), `curator_calls.jsonl` (full curator prompt + briefing per
+retrieval — the audit trail), and `run_config.json`. pass^1 = `mean(idx_i["reward"])`.
+
+---
+
+## D. Implementation (all in `tau2-bench/src/tau2/curator/`, committed to fork `YefanZhou/tau2-bench` main)
 
 | File | Purpose |
 |------|---------|
-| `curator.py` | `CuratorTau`: the memory object. `add(task_id, task, trajectory, reward)` — append-only, reward-gated write (no LLM). `retrieve(query, n)` — BM25 top-k over stored task texts → build curator prompt → curator LLM → strip `<think>` → return briefing. Q2 rule: empty store → `""` with no LLM call. Curation via `litellm` (reads `OPENAI_API_KEY`/`OPENAI_BASE_URL`), `CURATION_*` env knobs, gpt-5.x temperature fallback, gateway `X-Api-Key`. |
-| `bm25.py` | Vendored dependency-free `BM25Okapi` (k1=1.5, b=0.75, same idf flooring as `rank-bm25`). Used because `rank-bm25` is only a tau2 *knowledge* extra and the shared env must not be mutated. |
-| `prompts.py` | 4 curation-mode system prompts (`success_only`, `success_only_v1`, `success_and_fail`, `success_and_fail_v1`) + `MEMORY_INJECTION_PREFIX/SUFFIX`. Prompts are tau2-domain-aware (describe the `[USER]/[AGENT]/[TOOL]` transcript, tool-ordering / user-confirmation / policy-check extraction) with guardrails: never override policy, never copy concrete IDs/prices/dates. Modeled on the ALFWorld/WebShop curator prompts. |
-| `judge.py` | LLM-as-a-judge write-gate (`--reward-source judge`). Fig-13/15-style: 3 sub-scores `task_completion / policy_adherence / communication`, `score = mean`, `success = score ≥ 0.5`. Never raises. The env reward always stays the reported accuracy; the judge only decides what the curator stores. |
-| `patch.py` | Idempotent monkey-patch of `LLMAgent.system_prompt` to append `_system_prompt_suffix` after `</policy>`. Zero-diff when no suffix set (verified against vendored LLMAgent at 668d3bc — `SYSTEM_PROMPT`/`AGENT_INSTRUCTION` still module-level; `system_prompt` a `@property`). |
-| `trajectory.py` | `SimulationRun.messages` → `[USER]/[AGENT]/[TOOL]` text (tool calls via `to_functional_format`, tool outputs capped 500 chars). |
-| `run_curator.py` | The runner: `python -m tau2.curator.run_curator`. Group-batched retrieve-before / curate-after loop (batch = memory-update granularity). |
+| `curator.py` | `CuratorTau` — read-time memory curator. `add()` append-only reward-gated write; `retrieve()` BM25 top-k → curator-LLM briefing → strip `<think>`. Q2: empty store → "" no LLM. |
+| `reasoningbank.py` | `ReasoningBankTau` — LLM distills ≤3 markdown memory items per episode (success/fail reflection prompts); BM25 read = concatenate items (no read LLM). Port of `reasoningbank_alfworld_api.py`. |
+| `skillos.py` | `SkillOSTau` — evolving skill library via native tool-calling curation (`new_skill_insert`/`skill_update`/`skill_delete`); BM25 read over skill title+YAML-description. Port of SkillOS `skills_memory` + curation loop; self-contained (no embeddings/numpy). |
+| `prompts.py` | Curator system prompts + injection wrapper. Modes: `success_only`, `success_only_v1` (default used in all runs), **`success_only_v2_grounded`** (new: process-hints only, no invented policy rules, explicit precedence, relevance-gate + length cap), `success_and_fail[_v1]`. |
+| `judge.py` | LLM-judge write-gate (`--reward-source judge`): subscores task_completion / policy_adherence / communication. Env reward stays reported accuracy; judge only gates storage. |
+| `patch.py` | Monkey-patch `LLMAgent.system_prompt` to append `_system_prompt_suffix` after `</policy>` (zero-diff when unset). |
+| `trajectory.py` | `SimulationRun.messages` → `[USER]/[AGENT]/[TOOL]` text. |
+| `bm25.py` | Vendored dependency-free `BM25Okapi` (rank-bm25 is only a tau2 knowledge extra; shared env not mutated). |
+| `run_curator.py` | Runner. `--memory {none,curator,reasoningbank,skillos}`; identical retrieve/add seam + injection wrapper across the three methods. |
 
-### How the online-memory loop works (`run_curator.py`)
-Trial-major order. Within a trial, episodes are processed in **groups of `--batch-size`**:
-1. **Retrieve before the group** (single-threaded, frozen store snapshot): a briefing per group member.
-2. **Run the group concurrently** (`ThreadPoolExecutor`): build `orchestrator` via
-   `build_text_orchestrator(config, task, seed)`, set `agent._system_prompt_suffix` to the
-   briefing, `run_simulation(orchestrator)`, read `reward_info.reward` + trajectory.
-3. **Curate after the group** (barrier): `curator.add(...)` for each member (in task order),
-   gated by `--reward-source` (env DB reward by default; judge verdict if set).
-
-This is the exact "retrieve-before / update-after-group" contract from SkillCurator's
-`run_unified_dev_async_curator_api.py`; `--batch-size` controls how many memory-update batches
-you get (batch 5 → airline 10 batches/trial, retail/telecom 23).
-
-### Key CLI knobs (`python -m tau2.curator.run_curator --help`)
-`--domain {airline,retail,telecom,mock}` `--memory {curator,none}` `--agent-llm` `--user-llm`
-`--curation-model` (default = agent-llm) `--num-trials` `--seed` `--batch-size`
-`--task-split base` (default; telecom full set = 2285 tasks, base = 114) `--curation-mode`
-`--retrieve-num` `--reward-source {env,judge}` `--judge-model` `--is-gateway` `--exp-name`.
-
-### Reproduce a curator run (GCP)
+**Run recipe (GCP):**
 ```bash
 cd ~/SkillCurator-main/tau2-bench
 set -a && . ../.env && set +a
 export OPENAI_API_KEY=$GATEWAY_OPENAI_API_KEY OPENAI_BASE_URL=$GATEWAY_OPENAI_API_BASE
+export CURATION_MAX_TOKENS=8192   # REQUIRED for a gpt-5.x curator (reasoning tokens eat the cap → empty briefing otherwise)
 ./.venv/bin/python -m tau2.curator.run_curator \
   --domain airline --memory curator \
   --agent-llm gpt-4.1-2025-04-14 --user-llm gpt-4.1-2025-04-14 \
-  --curation-model gpt-4.1-2025-04-14 \
-  --num-trials 4 --seed 300 --batch-size 5 --curation-mode success_only_v1 \
-  --exp-name airline_curator_v1_gpt41
+  --curation-model gpt-5.4 \
+  --num-trials 1 --seed 300 --batch-size 5 --retrieve-num 3 \
+  --task-split base --curation-mode success_only_v1 \
+  --exp-name airline_cur_gpt54cur_rn3_nt1_s300
 ```
+Baseline / gpt-5.4-agent runs use tau2's native CLI: `./.venv/bin/tau2 run --domain <d>
+--agent-llm <m> --user-llm gpt-4.1-2025-04-14 --num-trials 1 --seed 300 --task-set-name <d>
+--save-to <name>.json`.
 
-### Reproduce a baseline (tau2 native CLI)
-```bash
-./.venv/bin/tau2 run --domain airline \
-  --agent-llm gpt-4.1-2025-04-14 --user-llm gpt-4.1-2025-04-14 \
-  --num-trials 4 --seed 300 --save-to airline_repro_gpt41.json
-```
+The two other memory methods swap `--memory curator` for `--memory reasoningbank` or
+`--memory skillos` (same seam; ReasoningBank/SkillOS smoke-tested live but not yet in the
+results table above).
 
 ---
 
-## D. Caveats for the analyst
-
-1. **Single seed.** All A.1–A.3 numbers are seed 300 only. curator_v1's success-only store is
-   self-reinforcing (store is built from the run's own successes; store size == success
-   count), so run-to-run variance is inherent — report **mean±std over ≥3 seeds**. Seeds 301
-   and 302 are being run for exactly this.
-2. **Curator vs baseline comparability.** airline/retail: the runner's task set (`base`)
-   equals the tau2 CLI default set with identical task ids, so curator_v1 and the baseline are
-   directly comparable. telecom: the runner defaults to `--task-split base` (114 tasks) to
-   match the baseline; do NOT compare against a full-set (2285-task) telecom run.
-3. **The env reward is always ground truth.** With `--reward-source judge`, the judge only
-   changes what the curator *stores*; the reported pass^1 is always tau2's DB-state reward.
-4. **gpt-5.4/5.1 runs are an internal capability check**, not leaderboard numbers.
-5. **Curator model.** Here the curator LLM = the agent LLM (gpt-4.1). Swappable via
-   `--curation-model` (e.g. a trained curator, gemini, gpt-5.x).
+## E. Caveats
+1. **Single seed (300)** everywhere → no error bars. gpt-5.4 at forced temp 1.0 shows large
+   per-run variance (airline 0.78 vs 0.66 across rn on 50 tasks). Do NOT over-read retrieve-num
+   or small cross-cell gaps. Multi-seed (301/302) is the planned next step.
+2. **Temperature confound** in gpt-5.4-vs-gpt-4.1 curator (1.0 vs 0.7) — unavoidable (gpt-5.4
+   can't run at 0.7). The `run_config.json` records the *requested* temp, not the executed one.
+3. **curator vs baseline is a controlled comparison** (identical except the injected briefing).
+   **gpt-5.4-agent is NOT** — it changes the agent model *and* forces temp 1.0; treat as a rough
+   capability reference, not a clean ablation. Not leaderboard-comparable.
+4. The env DB reward is always the reported accuracy; the LLM judge (when used) only gates writes.
