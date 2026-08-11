@@ -99,8 +99,9 @@ def main(argv=None):
                          "many episodes (run concurrently), curator writes fire at the group "
                          "barrier. Default = all episodes in a trial (one update per trial). "
                          "Set small (e.g. 5) to get many memory-update batches.")
-    ap.add_argument("--task-split", default=None,
-                    help="tau2 task split (default: the domain's default / 'base').")
+    ap.add_argument("--task-split", default="base",
+                    help="tau2 task split. Default 'base' matches `tau2 run` (the eval/paper split); "
+                         "telecom's full set is 2285 tasks, base is 114. Pass '' for the domain default.")
     ap.add_argument("--retrieve-num", type=int, default=3)
     ap.add_argument("--curation-mode", default="success_only",
                     help="success_only | success_only_v1 | success_and_fail | success_and_fail_v1")
@@ -175,9 +176,12 @@ def main(argv=None):
             is_gateway=args.is_gateway,
         )
 
-    config = _build_config(args, args.task_split)
+    # Empty string --task-split '' => use the domain default (None); else the given split.
+    task_split = args.task_split or None
 
-    tasks = get_tasks(args.domain, task_split_name=args.task_split)
+    config = _build_config(args, task_split)
+
+    tasks = get_tasks(args.domain, task_split_name=task_split)
     if args.num_tasks:
         tasks = tasks[: args.num_tasks]
 
