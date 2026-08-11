@@ -112,6 +112,31 @@ Logs: `~/tau_repro_logs/*.log`. **tau2 Results** dirs have `results.json` (read 
 / `skillos_skills.json` (the store), `curator_calls.jsonl` (full curator prompt + briefing per
 retrieval — the audit trail), and `run_config.json`. pass^1 = `mean(idx_i["reward"])`.
 
+### C.1 Exact number → source-file map (every cell in the §B tables)
+Substitute `<domain>` ∈ {airline, retail, telecom}. Each row's pass^1 = the value the run
+printed as `Final pass^1` in its log (also recomputable from the files as noted).
+
+| §B row | source directory (under data/simulations/) | log (under ~/tau_repro_logs/) |
+|---|---|---|
+| gpt-4.1 baseline | `<domain>_base_nt1_s300.json/results.json` | `<domain>_base_nt1_s300.log` |
+| gpt-4.1 curator (rn3) | `<domain>_cur_nt1_s300/` | `<domain>_cur_nt1_s300.log` |
+| gpt-4.1 agent + gpt-5.4 curator rn3 | `<domain>_cur_gpt54cur_rn3_nt1_s300/` | `<domain>_cur_gpt54cur_rn3_s300.log` |
+| gpt-4.1 agent + gpt-5.4 curator rn5 | `<domain>_cur_gpt54cur_rn5_nt1_s300/` | `<domain>_cur_gpt54cur_rn5_s300.log` |
+| gpt-5.4 agent, no memory | `<domain>_gpt54agent_nt1_s300.json/results.json` | `<domain>_gpt54agent_nt1_s300.log` |
+| gpt-5.4 agent + gpt-5.4 curator rn3 | `<domain>_g54agent_g54cur_rn3_nt1_s300/` | `<domain>_g54agent_g54cur_rn3_s300.log` |
+| gpt-5.4 agent + gpt-5.4 curator rn5 | `<domain>_g54agent_g54cur_rn5_nt1_s300/` | `<domain>_g54agent_g54cur_rn5_s300.log` |
+| airline A/B v1 | `airline_ABtest_success_only_v1_g54cur_s300/` | `airline_ABtest_success_only_v1_s300.log` |
+| airline A/B v2_grounded | `airline_ABtest_success_only_v2_grounded_g54cur_s300/` | `airline_ABtest_success_only_v2_grounded_s300.log` |
+
+Regenerate every number from the raw logs in one line (on the GCP node):
+```bash
+grep -H "Final pass\|Pass\^1 " ~/tau_repro_logs/*_s300.log ~/tau_repro_logs/*_nt1_s300.log
+```
+Or recompute a curator run's pass^1 directly from its idx files:
+```bash
+python -c "import json,glob; v=[json.load(open(f))['reward'] for f in glob.glob('data/simulations/<dir>/idx_*.json')]; print(sum(v)/len(v), len(v))"
+```
+
 ---
 
 ## D. Implementation (all in `tau2-bench/src/tau2/curator/`, committed to fork `YefanZhou/tau2-bench` main)
