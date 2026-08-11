@@ -79,8 +79,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="tau2-bench MemCurator (curator_v1) runner")
     ap.add_argument("--domain", required=True,
                     choices=["airline", "retail", "telecom", "mock"])
-    ap.add_argument("--memory", default="curator", choices=["none", "curator"],
-                    help="'curator' = MemCurator online memory; 'none' = ablation (no injection).")
+    ap.add_argument("--memory", default="curator",
+                    choices=["none", "curator", "reasoningbank", "skillos"],
+                    help="'curator' = MemCurator (read-time briefing); 'reasoningbank' = distilled "
+                         "memory items; 'skillos' = evolving skill library; 'none' = no injection.")
     ap.add_argument("--agent-llm", default="gpt-4.1-2025-04-14")
     ap.add_argument("--user-llm", default="gpt-4.1-2025-04-14")
     ap.add_argument("--curation-model", default=None,
@@ -121,9 +123,11 @@ def main(argv=None):
 
     from tau2.runner import build_text_orchestrator, run_simulation, get_tasks
     from tau2.curator import CuratorTau, apply_system_prompt_patch, simulation_to_text
+    from tau2.curator.reasoningbank import ReasoningBankTau
+    from tau2.curator.skillos import SkillOSTau
     from tau2.curator.prompts import MEMORY_INJECTION_PREFIX, MEMORY_INJECTION_SUFFIX
 
-    use_memory = args.memory == "curator"
+    use_memory = args.memory != "none"
     if use_memory:
         apply_system_prompt_patch()
 
@@ -163,18 +167,38 @@ def main(argv=None):
     output_path = os.path.join(args.output_root, exp_name)
     os.makedirs(output_path, exist_ok=True)
 
-    # Curator store lives inside the result folder (self-contained run).
-    curator = None
-    if use_memory:
-        curator = CuratorTau(
+    # Memory object (store lives inside the result folder — self-contained run). All three
+    # methods expose the SAME seam: retrieve(query, n) -> str  and  add(task_id, task, trajectory, reward).
+    _cur_model = args.curation_model or args.agent_llm
+    _cur_base = args.curation_base_url or os.environ.get("OPENAI_BASE_URL")
+    memory_obj = None
+    if args.memory == "curator":
+        memory_obj = CuratorTau(
             storage_path=os.path.join(output_path, "curator_tau_memory.jsonl"),
             retrieve_num=args.retrieve_num,
-            curation_model_name=args.curation_model or args.agent_llm,
-            curation_base_url=args.curation_base_url or os.environ.get("OPENAI_BASE_URL"),
+            curation_model_name=_cur_model,
+            curation_base_url=_cur_base,
             curator_on_empty=args.curator_on_empty,
             curation_mode=args.curation_mode,
             is_gateway=args.is_gateway,
         )
+    elif args.memory == "reasoningbank":
+        memory_obj = ReasoningBankTau(
+            storage_path=os.path.join(output_path, "reasoning_bank.jsonl"),
+            retrieve_num=args.retrieve_num,
+            curation_model_name=_cur_model,
+            curation_base_url=_cur_base,
+            is_gateway=args.is_gateway,
+        )
+    elif args.memory == "skillos":
+        memory_obj = SkillOSTau(
+            storage_path=os.path.join(output_path, "skillos_skills.json"),
+            retrieve_num=args.retrieve_num,
+            curation_model_name=_cur_model,
+            curation_base_url=_cur_base,
+            is_gateway=args.is_gateway,
+        )
+    curator = memory_obj   # keep the existing variable name used by the loop below
 
     # Empty string --task-split '' => use the domain default (None); else the given split.
     task_split = args.task_split or None
