@@ -66,6 +66,22 @@ All curator runs use curation-mode `success_only_v1` unless noted; batch-size 5.
 | gpt-5.4 (temp 1.0) | 3 | 0.780 | 0.886 | 0.746 |
 | gpt-5.4 (temp 1.0) | 5 | 0.660 | 0.877 | 0.702 |
 
+**gpt-5.4 (temp 1.0) as agent, gpt-5.1 (temp 1.0) as user simulator** (direct-OpenAI profile):
+
+| Curator model | rn | airline (50) | retail (114) | telecom (114) |
+|---|:--:|:--:|:--:|:--:|
+| none (baseline) | – | 0.640 | 0.798 | 0.491 |
+| gpt-5.4 (temp 1.0) | 3 | 0.640 | 0.904 | 0.684 |
+| gpt-5.4 (temp 1.0) | 5 | 0.660 | 0.886 | 0.737 |
+
+Note vs the gpt-4.1-user block above: the **no-memory baselines are identical** (0.640 / 0.798 /
+0.491) — swapping the user simulator gpt-4.1→gpt-5.1 did not move baseline accuracy on this seed.
+Curator arms differ with no consistent direction (gpt-5.1-user higher on retail, lower on
+airline-rn3 / telecom-rn3), and the biggest gap (airline-rn3 0.640 vs 0.780) is within the
+temp-1.0 single-run variance band — so the user-simulator swap does not materially change the
+conclusions at one seed. gpt-5.1 on the DIRECT OpenAI endpoint accepts temp 0/1 (unlike the
+gateway's litellm path, which forces the gpt-5 family to 1); it was run explicitly at temp 1.0.
+
 ### B.3 Key findings
 - **The gpt-5.4 curator flips sign with agent strength.** With the weak gpt-4.1 agent it *hurts*
   airline (0.58 → 0.48); with the strong gpt-5.4 agent the same curator *helps* airline (0.64 →
@@ -125,6 +141,9 @@ printed as `Final pass^1` in its log (also recomputable from the files as noted)
 | gpt-5.4 agent, no memory | `<domain>_gpt54agent_nt1_s300.json/results.json` | `<domain>_gpt54agent_nt1_s300.log` |
 | gpt-5.4 agent + gpt-5.4 curator rn3 | `<domain>_g54agent_g54cur_rn3_nt1_s300/` | `<domain>_g54agent_g54cur_rn3_s300.log` |
 | gpt-5.4 agent + gpt-5.4 curator rn5 | `<domain>_g54agent_g54cur_rn5_nt1_s300/` | `<domain>_g54agent_g54cur_rn5_s300.log` |
+| gpt-5.4 agent + gpt-5.1 user, no memory | `<domain>_g54agent_u51_base_nt1_s300.json/results.json` | `<domain>_g54agent_u51_base_s300.log` |
+| gpt-5.4 agent + gpt-5.1 user + gpt-5.4 curator rn3 | `<domain>_g54agent_u51_g54cur_rn3_nt1_s300/` | `<domain>_g54agent_u51_g54cur_rn3_s300.log` |
+| gpt-5.4 agent + gpt-5.1 user + gpt-5.4 curator rn5 | `<domain>_g54agent_u51_g54cur_rn5_nt1_s300/` | `<domain>_g54agent_u51_g54cur_rn5_s300.log` |
 | airline A/B v1 | `airline_ABtest_success_only_v1_g54cur_s300/` | `airline_ABtest_success_only_v1_s300.log` |
 | airline A/B v2_grounded | `airline_ABtest_success_only_v2_grounded_g54cur_s300/` | `airline_ABtest_success_only_v2_grounded_s300.log` |
 
