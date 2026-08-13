@@ -160,8 +160,9 @@ def main(argv=None):
                 raise
 
         def judge_verdict(instruction, trajectory):
-            succ, score, subs, rat = _judge.judge_success(instruction, trajectory, _judge_llm)
-            return {"success": succ, "score": score, "subscores": subs, "rationale": rat}
+            # Binary judge (ALFWorld Fig-13 style): success + reasoning only (tau2 reward is 0/1).
+            succ, reasoning = _judge.judge_success(instruction, trajectory, _judge_llm)
+            return {"success": succ, "reasoning": reasoning}
 
     exp_name = args.exp_name or f"{args.domain}_{args.memory}_{args.curation_mode}"
     output_path = os.path.join(args.output_root, exp_name)
@@ -292,9 +293,7 @@ def main(argv=None):
                     write_reward = 1.0 if v["success"] else 0.0
                     out["env_reward"] = reward
                     out["judge_reward"] = write_reward
-                    out["judge_score"] = v["score"]
-                    out["judge_subscores"] = v["subscores"]
-                    out["judge_rationale"] = v["rationale"]
+                    out["judge_reasoning"] = v["reasoning"]
                 with open(os.path.join(output_path, f"idx_{idx}.json"), "w", encoding="utf-8") as f:
                     json.dump(out, f, indent=2, ensure_ascii=False)
                 if use_memory:
